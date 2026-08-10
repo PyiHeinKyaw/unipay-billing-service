@@ -148,21 +148,12 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
         return { kind: 'invalidAmount' as const };
       }
 
-      const account = await tx.merchantAccount.findUnique({ where: { merchantId } });
-      if (!account || Number(account.balance) < totalPayableAmount) {
-        return { kind: 'insufficientBalance' as const };
-      }
-
       const updated = await tx.meterWhitelist.updateMany({
         where: { id: record.id, isPaid: false },
         data: { isPaid: true },
       });
       if (updated.count === 0) return { kind: 'paid' as const };
 
-      const updatedAccount = await tx.merchantAccount.update({
-        where: { merchantId },
-        data: { balance: { decrement: totalPayableAmount } },
-      });
       const transactionRef = `EBP-${randomUUID()}`;
       await tx.billerTransaction.create({
         data: {
@@ -187,7 +178,6 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
         record,
         totalPayableAmount,
         transactionRef,
-        balance: Number(updatedAccount.balance),
       };
     });
 
@@ -200,16 +190,12 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
     if (payment.kind === 'invalidAmount') {
       return reply.status(400).send(errorResponse(400, 'Invalid payment amount'));
     }
-    if (payment.kind === 'insufficientBalance') {
-      return reply.status(400).send(errorResponse(400, 'လက်ကျန်ငွေ မလုံလောက်ပါ'));
-    }
 
     return successResponse({
       ...previewPayload(payment.record),
       amount: payment.totalPayableAmount,
       status: 'SUCCESS',
       transactionRef: payment.transactionRef,
-      updatedBalance: payment.balance,
       paidAt: new Date().toISOString(),
     });
   });
