@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model HealthCheck {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+}
+
+model BillerProvider {
+  id              String            @id @default(uuid()) @db.Uuid
+  code            String            @unique
+  name            String
+  category        String            @default("ELECTRICITY")
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  meterWhitelists MeterWhitelist[]
+}
+
+model MerchantAccount {
+  merchantId        String             @id
+  balance           Decimal            @db.Decimal(14, 2)
+  currency          String             @default("MMK")
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  billerTransactions BillerTransaction[]
+}
+
+model MeterWhitelist {
+  id           String         @id @default(uuid()) @db.Uuid
+  billerId     String         @db.Uuid
+  biller       BillerProvider @relation(fields: [billerId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  ledgerNo     String?
+  customerNo   String         @unique
+  meterNo      String?
+  customerName String
+  address      String?
+  billCode     String?
+  dueDate      DateTime
+  unitsUsed    Int            @default(0)
+  horsepower   Decimal        @default(0) @db.Decimal(14, 2)
+  powerFee     Decimal        @db.Decimal(14, 2)
+  serviceFee   Decimal        @db.Decimal(14, 2)
+  totalAmount  Decimal        @db.Decimal(14, 2)
+  isPaid       Boolean        @default(false)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([billerId])
+}
+
+model BillerTransaction {
+  id            String          @id @default(uuid()) @db.Uuid
+  merchantId    String
+  merchant      MerchantAccount @relation(fields: [merchantId], references: [merchantId], onDelete: Restrict, onUpdate: Cascade)
+  billerCode    String
+  barcodeNumber String
+  customerName  String
+  customerNo    String
+  meterNo       String?
+  unit          Int
+  horsepower    Decimal         @db.Decimal(14, 2)
+  billAmount    Decimal         @db.Decimal(14, 2)
+  serviceFee    Decimal         @db.Decimal(14, 2)
+  totalAmount   Decimal         @db.Decimal(14, 2)
+  status        String
+  transactionRef String        @unique
+  createdAt     DateTime        @default(now())
+
+  @@index([merchantId])
+  @@index([customerNo])
+}

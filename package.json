@@ -1,0 +1,45 @@
+{
+  "name": "unipay-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "debug": "node --inspect --import tsx/esm src/server.ts",
+    "build": "rimraf dist && tsc",
+    "start": "node dist/server.js",
+    "pm2:start": "pm2 start ecosystem.config.js --env staging",
+    "pm2:reload": "pm2 reload ecosystem.config.js --env staging",
+    "pm2:stop": "pm2 stop unipay-billing-service",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "prisma db seed",
+    "db:reset-bills": "tsx prisma/reset-bills.ts",
+    "db:studio": "prisma studio"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@fastify/env": "^5.0.2",
+    "@fastify/sensible": "^6.0.3",
+    "@prisma/client": "^6.13.0",
+    "dotenv": "^17.2.1",
+    "fastify": "^5.4.0",
+    "fastify-plugin": "^5.0.1",
+    "xlsx": "^0.18.5",
+    "zod": "^4.0.10"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "prisma": "^6.13.0",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}
