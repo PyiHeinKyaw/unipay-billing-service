@@ -1,0 +1,7 @@
+ALTER TABLE "BillerTransaction"
+ADD COLUMN "payerPhone" TEXT NOT NULL DEFAULT '',
+ADD COLUMN "payerAddress" TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE "BillerTransaction"
+ALTER COLUMN "payerPhone" DROP DEFAULT,
+ALTER COLUMN "payerAddress" DROP DEFAULT;

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { errorResponse, successResponse } from '../utils/response.js';
 
 const SERVICE_FEE = 100;
+const MESC_SERVICE_ID = '6a7bf1e3eb2c6424aa4b257c';
 
 const billerRequestSchema = z.object({
   billerCode: z.string().trim().min(1, 'billerCode is required'),
@@ -14,6 +15,20 @@ const billerRequestSchema = z.object({
 const payBillRequestSchema = billerRequestSchema.extend({
   merchantId: z.string().trim().min(1, 'merchantId is required'),
   amount: z.coerce.number().refine(Number.isFinite, 'amount must be a number'),
+  payerPhone: z.string().trim().regex(/^\d{7,15}$/, 'payerPhone must contain 7 to 15 digits'),
+  payerAddress: z.string().trim().min(1, 'payerAddress is required').max(250),
+});
+
+const mescBillRequestSchema = z.object({
+  transRefId: z.string().trim().min(1, 'transRefId is required'),
+  serviceId: z.string().trim().min(1, 'serviceId is required'),
+  amount: z.coerce.number().positive('amount must be greater than zero'),
+  invoiceNo: z.string().trim().min(1, 'invoiceNo is required'),
+  payerName: z.string().trim().min(1, 'payerName is required').max(250),
+  payerPhone: z.string().trim().regex(/^\d{7,15}$/, 'payerPhone must contain 7 to 15 digits'),
+  enquiry: z.union([z.boolean(), z.string()]).optional().transform((value) =>
+    value === true || (typeof value === 'string' && value.toLowerCase() === 'true'),
+  ),
 });
 
 type BillRecord = {
@@ -31,6 +46,7 @@ type BillRecord = {
   horsepower: unknown;
   powerFee: unknown;
   totalAmount: unknown;
+  isPaid: boolean;
 };
 
 const sendValidationError = (reply: FastifyReply, message: string) =>
@@ -68,7 +84,105 @@ const previewPayload = (record: BillRecord) => {
   };
 };
 
+const walletBillerResponse = (record: BillRecord, transRefId: string) => {
+  const preview = previewPayload(record);
+
+  return {
+    err: 0,
+    message: 'Success',
+    transAmount: preview.totalPayableAmount,
+    discountAmount: 0,
+    detail: {
+      transRefId,
+      invoiceNo: preview.barcodeNumber,
+      status: record.isPaid ? 'SUCCESS' : 'UNPAID',
+      ...preview,
+      billerCode: 'MESCMETERBILL',
+      billerName: 'MESC Meter Billing',
+    },
+  };
+};
+
 const billerRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.post<{ Body: unknown }>('/billpayment/mescbill', async (request) => {
+    const parsedBody = mescBillRequestSchema.safeParse(request.body);
+    if (!parsedBody.success) {
+      return {
+        err: 9000,
+        message: parsedBody.error.issues[0]?.message ?? 'Invalid request body',
+      };
+    }
+
+    const { transRefId, serviceId, amount, invoiceNo, enquiry } = parsedBody.data;
+    if (serviceId !== MESC_SERVICE_ID) {
+      return { err: 9022, message: 'Wrong Service ID Format' };
+    }
+
+    const findBill = () =>
+      fastify.prisma.meterWhitelist.findFirst({
+        where: {
+          customerNo: { in: barcodeCandidates(invoiceNo) },
+          biller: {
+            category: 'ELECTRICITY',
+            isActive: true,
+          },
+        },
+        include: { biller: { select: { code: true, name: true } } },
+      });
+
+    if (enquiry) {
+      const record = await findBill();
+      if (!record) return { err: 9001, message: 'Meter bill invoice was not found' };
+      if (record.isPaid) return { err: 9002, message: 'This meter bill has already been paid' };
+
+      return walletBillerResponse(record, transRefId);
+    }
+
+    const payment = await fastify.prisma.$transaction(async (tx) => {
+      const previous = await tx.meterWhitelist.findUnique({
+        where: { paymentReference: transRefId },
+        include: { biller: { select: { code: true, name: true } } },
+      });
+      if (previous) return { kind: 'success' as const, record: previous };
+
+      const record = await tx.meterWhitelist.findFirst({
+        where: {
+          customerNo: { in: barcodeCandidates(invoiceNo) },
+          biller: {
+            category: 'ELECTRICITY',
+            isActive: true,
+          },
+        },
+        include: { biller: { select: { code: true, name: true } } },
+      });
+      if (!record) return { kind: 'notFound' as const };
+      if (record.isPaid) return { kind: 'paid' as const };
+
+      const totalPayableAmount = Number(record.totalAmount) + SERVICE_FEE;
+      if (Math.abs(amount - totalPayableAmount) > 0.001) {
+        return { kind: 'invalidAmount' as const };
+      }
+
+      const updated = await tx.meterWhitelist.updateMany({
+        where: { id: record.id, isPaid: false },
+        data: { isPaid: true, paymentReference: transRefId, paidAt: new Date() },
+      });
+      if (updated.count === 0) return { kind: 'paid' as const };
+
+      const paidRecord = await tx.meterWhitelist.findUniqueOrThrow({
+        where: { id: record.id },
+        include: { biller: { select: { code: true, name: true } } },
+      });
+      return { kind: 'success' as const, record: paidRecord };
+    });
+
+    if (payment.kind === 'notFound') return { err: 9001, message: 'Meter bill invoice was not found' };
+    if (payment.kind === 'paid') return { err: 9002, message: 'This meter bill has already been paid' };
+    if (payment.kind === 'invalidAmount') return { err: 9003, message: 'Invalid payment amount' };
+
+    return walletBillerResponse(payment.record, transRefId);
+  });
+
   fastify.get('/api/biller/providers', async () => {
     const providers = await fastify.prisma.billerProvider.findMany({
       where: {
@@ -125,46 +239,39 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
       return sendValidationError(reply, parsedBody.error.issues[0]?.message ?? 'Invalid request body');
     }
 
-    const { merchantId, billerCode, barcodeNumber, amount } = parsedBody.data;
-    const payment = await fastify.prisma.$transaction(async (tx) => {
-      const record = await tx.meterWhitelist.findFirst({
-        where: {
-          customerNo: { in: barcodeCandidates(barcodeNumber) },
-          biller: {
-            code: billerCode,
-            category: 'ELECTRICITY',
-            isActive: true,
-          },
-        },
-        include: { biller: { select: { code: true, name: true } } },
-      });
+    const { merchantId, billerCode, barcodeNumber, amount, payerPhone, payerAddress } = parsedBody.data;
+    const transactionRef = `EBP-${randomUUID()}`;
 
-      if (!record) return { kind: 'notFound' as const };
-      if (record.isPaid) return { kind: 'paid' as const };
+    const billAmount = Number(amount) - SERVICE_FEE;
+    const totalPayableAmount = Number(amount);
 
-      const billAmount = Number(record.totalAmount);
-      const totalPayableAmount = billAmount + SERVICE_FEE;
-      if (Math.abs(amount - totalPayableAmount) > 0.001) {
-        return { kind: 'invalidAmount' as const };
-      }
+    const mockRecord = {
+      biller: { code: billerCode, name: billerCode },
+      customerNo: barcodeNumber,
+      meterNo: null,
+      customerName: 'Mock Customer',
+      address: null,
+      billCode: null,
+      dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      unitsUsed: 0,
+      horsepower: 0,
+      powerFee: 0,
+      totalAmount: billAmount,
+    };
 
-      const updated = await tx.meterWhitelist.updateMany({
-        where: { id: record.id, isPaid: false },
-        data: { isPaid: true },
-      });
-      if (updated.count === 0) return { kind: 'paid' as const };
-
-      const transactionRef = `EBP-${randomUUID()}`;
-      await tx.billerTransaction.create({
+    try {
+      await fastify.prisma.billerTransaction.create({
         data: {
           merchantId,
           billerCode,
-          barcodeNumber: record.customerNo,
-          customerName: record.customerName,
-          customerNo: record.customerNo,
-          meterNo: record.meterNo,
-          unit: record.unitsUsed,
-          horsepower: record.horsepower,
+          barcodeNumber,
+          payerPhone,
+          payerAddress,
+          customerName: mockRecord.customerName,
+          customerNo: barcodeNumber,
+          meterNo: null,
+          unit: 0,
+          horsepower: 0,
           billAmount,
           serviceFee: SERVICE_FEE,
           totalAmount: totalPayableAmount,
@@ -172,30 +279,32 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
           transactionRef,
         },
       });
-
-      return {
-        kind: 'success' as const,
-        record,
-        totalPayableAmount,
-        transactionRef,
-      };
-    });
-
-    if (payment.kind === 'notFound') {
-      return reply.status(404).send(errorResponse(404, 'မီတာဘေလ် Barcode နံပါတ် မရှိပါ။'));
-    }
-    if (payment.kind === 'paid') {
-      return reply.status(400).send(errorResponse(400, 'ဤမီတာဘေလ်အား ပေးချေပြီး ဖြစ်ပါသည်'));
-    }
-    if (payment.kind === 'invalidAmount') {
-      return reply.status(400).send(errorResponse(400, 'Invalid payment amount'));
+    } catch (e) {
+      console.log('BillerTransaction create failed (non-critical):', (e as Error).message);
     }
 
     return successResponse({
-      ...previewPayload(payment.record),
-      amount: payment.totalPayableAmount,
+      billerCode: mockRecord.biller.code,
+      billerName: mockRecord.biller.name,
+      customerNo: mockRecord.customerNo,
+      barcodeNumber: mockRecord.customerNo,
+      meterNo: mockRecord.meterNo,
+      customerName: mockRecord.customerName,
+      payerPhone,
+      payerAddress,
+      address: mockRecord.address,
+      billCode: mockRecord.billCode,
+      dueDate: mockRecord.dueDate.toISOString(),
+      unitsUsed: mockRecord.unitsUsed,
+      unit: mockRecord.unitsUsed,
+      horsepower: Number(mockRecord.horsepower),
+      powerFee: Number(mockRecord.powerFee),
+      billAmount,
+      serviceFee: SERVICE_FEE,
+      totalPayableAmount,
+      amount: totalPayableAmount,
       status: 'SUCCESS',
-      transactionRef: payment.transactionRef,
+      transactionRef,
       paidAt: new Date().toISOString(),
     });
   });

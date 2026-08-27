@@ -49,6 +49,8 @@ model MeterWhitelist {
   serviceFee   Decimal        @db.Decimal(14, 2)
   totalAmount  Decimal        @db.Decimal(14, 2)
   isPaid       Boolean        @default(false)
+  paymentReference String?    @unique
+  paidAt       DateTime?
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
@@ -61,6 +63,8 @@ model BillerTransaction {
   merchant      MerchantAccount @relation(fields: [merchantId], references: [merchantId], onDelete: Restrict, onUpdate: Cascade)
   billerCode    String
   barcodeNumber String
+  payerPhone     String
+  payerAddress   String
   customerName  String
   customerNo    String
   meterNo       String?
