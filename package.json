@@ -18,6 +18,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
+    "db:seed-mesc-transactions": "tsx prisma/seed-mesc-transactions.ts",
     "db:reset-bills": "tsx prisma/reset-bills.ts",
     "db:studio": "prisma studio"
   },
