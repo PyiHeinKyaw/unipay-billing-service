@@ -26,6 +26,12 @@ type MeterWhitelistRow = {
   horsepower: string;
   powerFee: string;
   serviceFee: string;
+  discount: string;
+  lastBalance: string;
+  paidAmount: string;
+  arrears: string;
+  reconnectionFee: string;
+  deposit: string;
   totalAmount: string;
 };
 
@@ -78,10 +84,10 @@ const parseDate = (value: ExcelCell, field: string, rowNumber: number): Date => 
 };
 
 const findHeaderRow = (rows: ExcelRow[]): number => {
-  const requiredHeaders = ['မီတာသုံးသူအမှတ်', 'အမည်', 'Due Date', 'ဝန်ဆောင်ခ'];
   const index = rows.findIndex((row) => {
     const values = new Set(row.map(toText).filter((value): value is string => Boolean(value)));
-    return requiredHeaders.every((header) => values.has(header));
+    const hasCustomerNo = values.has('မီတာသုံးသူအမှတ်') || values.has('မီတာာသုံးသူအမှတ်');
+    return hasCustomerNo && ['အမည်', 'Due Date', 'ဝန်ဆောင်ခ'].every((header) => values.has(header));
   });
 
   if (index < 0) throw new Error('Could not find the expected MESC Excel header row');
@@ -112,9 +118,17 @@ const parseWorkbook = (filePath: string): MeterWhitelistRow[] => {
     return index;
   };
 
+  const columnAny = (...names: string[]): number => {
+    for (const name of names) {
+      const index = columns.get(name);
+      if (index !== undefined) return index;
+    }
+    throw new Error(`Missing required Excel column; expected one of: ${names.join(', ')}`);
+  };
+
   const indexes = {
-    ledgerNo: column('အမှတ်'),
-    customerNo: column('မီတာသုံးသူအမှတ်'),
+    ledgerNo: columnAny('အမှတ်', 'လယ်ဂျာအမှတ်'),
+    customerNo: columnAny('မီတာသုံးသူအမှတ်', 'မီတာာသုံးသူအမှတ်'),
     meterNo: column('မီတာအမှတ်'),
     customerName: column('အမည်'),
     address: column('လိပ်စာ'),
@@ -124,6 +138,12 @@ const parseWorkbook = (filePath: string): MeterWhitelistRow[] => {
     powerFee: column('ဓာတ်အားခ'),
     serviceFee: column('ဝန်ဆောင်ခ'),
     horsepower: column('မြင်းကောင်ရေခ'),
+    discount: column('Discount'),
+    lastBalance: column('Last Balance'),
+    paidAmount: column('ပေါင်း'),
+    arrears: column('ကြွေးကျန်ငွေ'),
+    reconnectionFee: column('မီးဆက်ခ'),
+    deposit: column('Deposit'),
     totalAmount: columns.get('Total') ?? column('စုစုပေါင်း'),
   };
 
@@ -145,6 +165,12 @@ const parseWorkbook = (filePath: string): MeterWhitelistRow[] => {
       horsepower: parseDecimal(row[indexes.horsepower], 'horsepower', rowNumber),
       powerFee: parseDecimal(row[indexes.powerFee], 'powerFee', rowNumber),
       serviceFee: parseDecimal(row[indexes.serviceFee], 'serviceFee', rowNumber),
+      discount: parseDecimal(row[indexes.discount], 'discount', rowNumber),
+      lastBalance: parseDecimal(row[indexes.lastBalance], 'lastBalance', rowNumber),
+      paidAmount: parseDecimal(row[indexes.paidAmount], 'paidAmount', rowNumber),
+      arrears: parseDecimal(row[indexes.arrears], 'arrears', rowNumber),
+      reconnectionFee: parseDecimal(row[indexes.reconnectionFee], 'reconnectionFee', rowNumber),
+      deposit: parseDecimal(row[indexes.deposit], 'deposit', rowNumber),
       totalAmount: parseDecimal(row[indexes.totalAmount], 'totalAmount', rowNumber),
     }];
   });
@@ -168,6 +194,7 @@ const seed = async (): Promise<void> => {
   const requestedPath = argumentValue('--file') ?? DEFAULT_FILE;
   const filePath = isAbsolute(requestedPath) ? requestedPath : resolve(process.cwd(), requestedPath);
   const apply = process.argv.includes('--apply');
+  const updateExisting = process.argv.includes('--update-existing');
   const records = parseWorkbook(filePath);
 
   const biller = await prisma.billerProvider.findUnique({ where: { code: BILLER_CODE } });
@@ -190,17 +217,30 @@ const seed = async (): Promise<void> => {
     return;
   }
 
-  const result = await prisma.meterWhitelist.createMany({
-    data: newRecords.map(({ rowNumber: _rowNumber, ...record }) => ({
-      ...record,
-      billerId: biller.id,
-      isPaid: false,
-    })),
-    skipDuplicates: true,
+  const insertData = newRecords.map(({ rowNumber: _rowNumber, ...record }) => ({
+    ...record,
+    billerId: biller.id,
+    isPaid: false,
+  }));
+  const existingRecords = records.filter(({ customerNo }) => existingNumbers.has(customerNo));
+  const result = await prisma.$transaction(async (tx) => {
+    const inserted = await tx.meterWhitelist.createMany({ data: insertData, skipDuplicates: true });
+    let updated = 0;
+    if (updateExisting) {
+      for (const { rowNumber: _rowNumber, customerNo, ...record } of existingRecords) {
+        const change = await tx.meterWhitelist.updateMany({
+          where: { customerNo, billerId: biller.id },
+          data: record,
+        });
+        updated += change.count;
+      }
+    }
+    return { inserted: inserted.count, updated };
   });
 
-  console.log(`Inserted: ${result.count}`);
-  console.log(`Existing records unchanged: ${records.length - result.count}`);
+  console.log(`Inserted: ${result.inserted}`);
+  console.log(`Existing records updated: ${result.updated}`);
+  console.log(`Existing records unchanged: ${existingRecords.length - result.updated}`);
 };
 
 try {

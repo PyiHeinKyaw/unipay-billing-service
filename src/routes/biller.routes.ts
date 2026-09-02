@@ -5,7 +5,6 @@ import { z } from 'zod';
 import { errorResponse, successResponse } from '../utils/response.js';
 
 const MESC_SERVICE_ID = '6a7bf1e3eb2c6424aa4b257c';
-
 const billerRequestSchema = z.object({
   billerCode: z.string().trim().min(1, 'billerCode is required'),
   barcodeNumber: z.string().trim().min(1, 'barcodeNumber is required'),
@@ -45,6 +44,12 @@ type BillRecord = {
   horsepower: unknown;
   powerFee: unknown;
   serviceFee: unknown;
+  discount: unknown;
+  lastBalance: unknown;
+  paidAmount: unknown;
+  arrears: unknown;
+  reconnectionFee: unknown;
+  deposit: unknown;
   totalAmount: unknown;
   isPaid: boolean;
 };
@@ -80,8 +85,16 @@ const previewPayload = (record: BillRecord) => {
     unit: record.unitsUsed,
     horsepower: Number(record.horsepower),
     powerFee: Number(record.powerFee),
+    energyCharge: Number(record.powerFee),
     billAmount,
     serviceFee,
+    discount: Number(record.discount),
+    lastBalance: Number(record.lastBalance),
+    paidAmount: Number(record.paidAmount),
+    arrears: Number(record.arrears),
+    reconnectionFee: Number(record.reconnectionFee),
+    deposit: Number(record.deposit),
+    total: totalPayableAmount,
     totalPayableAmount,
   };
 };
@@ -266,35 +279,31 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
     const serviceFee = preview.serviceFee;
     const totalPayableAmount = preview.totalPayableAmount;
 
-    const mockRecord = {
-      biller: { code: billerCode, name: billerCode },
-      customerNo: barcodeNumber,
-      meterNo: null,
-      customerName: record.customerName,
-      address: record.address,
-      billCode: record.billCode,
-      dueDate: record.dueDate,
-      unitsUsed: record.unitsUsed,
-      horsepower: record.horsepower,
-      powerFee: record.powerFee,
-      totalAmount: record.totalAmount,
-    };
-
     try {
       await fastify.prisma.billerTransaction.create({
         data: {
           merchantId,
           billerCode,
-          barcodeNumber,
+          barcodeNumber: record.customerNo,
           payerPhone,
           payerAddress,
-          customerName: mockRecord.customerName,
-          customerNo: barcodeNumber,
-          meterNo: null,
-          unit: 0,
-          horsepower: 0,
+          customerName: record.customerName,
+          customerNo: record.customerNo,
+          meterNo: record.meterNo,
+          address: record.address,
+          billCode: record.billCode,
+          dueDate: record.dueDate,
+          unit: record.unitsUsed,
+          horsepower: record.horsepower,
+          powerFee: record.powerFee,
           billAmount,
           serviceFee,
+          discount: record.discount,
+          lastBalance: record.lastBalance,
+          paidAmount: record.paidAmount,
+          arrears: record.arrears,
+          reconnectionFee: record.reconnectionFee,
+          deposit: record.deposit,
           totalAmount: totalPayableAmount,
           status: 'SUCCESS',
           transactionRef,
@@ -305,24 +314,9 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     return successResponse({
-      billerCode: mockRecord.biller.code,
-      billerName: mockRecord.biller.name,
-      customerNo: mockRecord.customerNo,
-      barcodeNumber: mockRecord.customerNo,
-      meterNo: mockRecord.meterNo,
-      customerName: mockRecord.customerName,
+      ...previewPayload(record),
       payerPhone,
       payerAddress,
-      address: mockRecord.address,
-      billCode: mockRecord.billCode,
-      dueDate: mockRecord.dueDate.toISOString(),
-      unitsUsed: mockRecord.unitsUsed,
-      unit: mockRecord.unitsUsed,
-      horsepower: Number(mockRecord.horsepower),
-      powerFee: Number(mockRecord.powerFee),
-      billAmount,
-      serviceFee,
-      totalPayableAmount,
       amount: totalPayableAmount,
       status: 'SUCCESS',
       transactionRef,
