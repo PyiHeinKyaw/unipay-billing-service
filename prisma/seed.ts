@@ -41,6 +41,12 @@ type MeterWhitelistSeed = {
   horsepower: string;
   powerFee: string;
   serviceFee: string;
+  discount: string;
+  lastBalance: string;
+  paidAmount: string;
+  arrears: string;
+  reconnectionFee: string;
+  deposit: string;
   totalAmount: string;
   isPaid: boolean;
 };
@@ -167,6 +173,12 @@ const parseWorkbook = (filePath: string, billerId: string): MeterWhitelistSeed[]
     horsepower: column('မြင်းကောင်ရေခ'),
     powerFee: column('ဓာတ်အားခ'),
     serviceFee: column('ဝန်ဆောင်ခ'),
+    discount: column('Discount'),
+    lastBalance: column('Last Balance'),
+    paidAmount: column('ပေါင်း'),
+    arrears: column('ကြွေးကျန်ငွေ'),
+    reconnectionFee: column('မီးဆက်ခ'),
+    deposit: column('Deposit'),
     totalAmount: totalColumn,
   };
 
@@ -191,6 +203,12 @@ const parseWorkbook = (filePath: string, billerId: string): MeterWhitelistSeed[]
         horsepower: parseDecimal(row[indexes.horsepower], 'horsepower', rowNumber),
         powerFee: parseDecimal(row[indexes.powerFee], 'powerFee', rowNumber),
         serviceFee: parseDecimal(row[indexes.serviceFee], 'serviceFee', rowNumber),
+        discount: parseDecimal(row[indexes.discount], 'discount', rowNumber),
+        lastBalance: parseDecimal(row[indexes.lastBalance], 'lastBalance', rowNumber),
+        paidAmount: parseDecimal(row[indexes.paidAmount], 'paidAmount', rowNumber),
+        arrears: parseDecimal(row[indexes.arrears], 'arrears', rowNumber),
+        reconnectionFee: parseDecimal(row[indexes.reconnectionFee], 'reconnectionFee', rowNumber),
+        deposit: parseDecimal(row[indexes.deposit], 'deposit', rowNumber),
         totalAmount: parseDecimal(row[indexes.totalAmount], 'totalAmount', rowNumber),
         isPaid: false,
       },
@@ -235,10 +253,10 @@ const seed = async (): Promise<void> => {
   const records = parseWorkbook(workbookPath, defaultBillerId);
 
   await prisma.$transaction(
-    records.map(({ customerNo, ...record }) =>
+    records.map(({ customerNo, isPaid, ...record }) =>
       prisma.meterWhitelist.upsert({
         where: { customerNo },
-        create: { customerNo, ...record },
+        create: { customerNo, isPaid, ...record },
         update: record,
       }),
     ),
