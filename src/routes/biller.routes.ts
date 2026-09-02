@@ -4,7 +4,6 @@ import { z } from 'zod';
 
 import { errorResponse, successResponse } from '../utils/response.js';
 
-const SERVICE_FEE = 100;
 const MESC_SERVICE_ID = '6a7bf1e3eb2c6424aa4b257c';
 
 const billerRequestSchema = z.object({
@@ -45,6 +44,7 @@ type BillRecord = {
   unitsUsed: number;
   horsepower: unknown;
   powerFee: unknown;
+  serviceFee: unknown;
   totalAmount: unknown;
   isPaid: boolean;
 };
@@ -62,7 +62,9 @@ const barcodeCandidates = (barcodeNumber: string): string[] => {
 };
 
 const previewPayload = (record: BillRecord) => {
-  const billAmount = Number(record.totalAmount);
+  const totalPayableAmount = Number(record.totalAmount);
+  const serviceFee = Number(record.serviceFee);
+  const billAmount = totalPayableAmount - serviceFee;
 
   return {
     billerCode: record.biller.code,
@@ -79,8 +81,8 @@ const previewPayload = (record: BillRecord) => {
     horsepower: Number(record.horsepower),
     powerFee: Number(record.powerFee),
     billAmount,
-    serviceFee: SERVICE_FEE,
-    totalPayableAmount: billAmount + SERVICE_FEE,
+    serviceFee,
+    totalPayableAmount,
   };
 };
 
@@ -158,7 +160,7 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
       if (!record) return { kind: 'notFound' as const };
       if (record.isPaid) return { kind: 'paid' as const };
 
-      const totalPayableAmount = Number(record.totalAmount) + SERVICE_FEE;
+      const totalPayableAmount = Number(record.totalAmount);
       if (Math.abs(amount - totalPayableAmount) > 0.001) {
         return { kind: 'invalidAmount' as const };
       }
@@ -242,21 +244,40 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
     const { merchantId, billerCode, barcodeNumber, amount, payerPhone, payerAddress } = parsedBody.data;
     const transactionRef = `EBP-${randomUUID()}`;
 
-    const billAmount = Number(amount) - SERVICE_FEE;
-    const totalPayableAmount = Number(amount);
+    const record = await fastify.prisma.meterWhitelist.findFirst({
+      where: {
+        customerNo: { in: barcodeCandidates(barcodeNumber) },
+        biller: { code: billerCode, category: 'ELECTRICITY', isActive: true },
+      },
+      include: { biller: { select: { code: true, name: true } } },
+    });
+    if (!record) {
+      return reply.status(404).send(errorResponse(404, 'မီတာဘေလ် Barcode နံပါတ် မရှိပါ။'));
+    }
+    if (record.isPaid) {
+      return reply.status(400).send(errorResponse(400, 'ဤမီတာဘေလ်အား ပေးချေပြီး ဖြစ်ပါသည်'));
+    }
+
+    const preview = previewPayload(record);
+    if (Math.abs(Number(amount) - preview.totalPayableAmount) > 0.001) {
+      return sendValidationError(reply, 'Invalid payment amount');
+    }
+    const billAmount = preview.billAmount;
+    const serviceFee = preview.serviceFee;
+    const totalPayableAmount = preview.totalPayableAmount;
 
     const mockRecord = {
       biller: { code: billerCode, name: billerCode },
       customerNo: barcodeNumber,
       meterNo: null,
-      customerName: 'Mock Customer',
-      address: null,
-      billCode: null,
-      dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      unitsUsed: 0,
-      horsepower: 0,
-      powerFee: 0,
-      totalAmount: billAmount,
+      customerName: record.customerName,
+      address: record.address,
+      billCode: record.billCode,
+      dueDate: record.dueDate,
+      unitsUsed: record.unitsUsed,
+      horsepower: record.horsepower,
+      powerFee: record.powerFee,
+      totalAmount: record.totalAmount,
     };
 
     try {
@@ -273,7 +294,7 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
           unit: 0,
           horsepower: 0,
           billAmount,
-          serviceFee: SERVICE_FEE,
+          serviceFee,
           totalAmount: totalPayableAmount,
           status: 'SUCCESS',
           transactionRef,
@@ -300,7 +321,7 @@ const billerRoutes: FastifyPluginAsync = async (fastify) => {
       horsepower: Number(mockRecord.horsepower),
       powerFee: Number(mockRecord.powerFee),
       billAmount,
-      serviceFee: SERVICE_FEE,
+      serviceFee,
       totalPayableAmount,
       amount: totalPayableAmount,
       status: 'SUCCESS',
