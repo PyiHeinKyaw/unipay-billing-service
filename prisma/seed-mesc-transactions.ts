@@ -195,6 +195,7 @@ const seed = async (): Promise<void> => {
   const filePath = isAbsolute(requestedPath) ? requestedPath : resolve(process.cwd(), requestedPath);
   const apply = process.argv.includes('--apply');
   const updateExisting = process.argv.includes('--update-existing');
+  const reassignBiller = process.argv.includes('--reassign-biller');
   const records = parseWorkbook(filePath);
 
   const biller = await prisma.billerProvider.findUnique({ where: { code: BILLER_CODE } });
@@ -202,15 +203,17 @@ const seed = async (): Promise<void> => {
 
   const existing = await prisma.meterWhitelist.findMany({
     where: { customerNo: { in: records.map(({ customerNo }) => customerNo) } },
-    select: { customerNo: true },
+    select: { customerNo: true, billerId: true },
   });
   const existingNumbers = new Set(existing.map(({ customerNo }) => customerNo));
   const newRecords = records.filter(({ customerNo }) => !existingNumbers.has(customerNo));
+  const mismatchedBillerRecords = existing.filter(({ billerId }) => billerId !== biller.id);
 
   console.log(`File: ${filePath}`);
   console.log(`Valid rows: ${records.length}`);
   console.log(`New records: ${newRecords.length}`);
   console.log(`Existing records skipped: ${records.length - newRecords.length}`);
+  console.log(`Existing records assigned to another biller: ${mismatchedBillerRecords.length}`);
 
   if (!apply) {
     console.log('Database changes: 0 (dry run). Add --apply to insert new records.');
@@ -229,8 +232,8 @@ const seed = async (): Promise<void> => {
     if (updateExisting) {
       for (const { rowNumber: _rowNumber, customerNo, ...record } of existingRecords) {
         const change = await tx.meterWhitelist.updateMany({
-          where: { customerNo, billerId: biller.id },
-          data: record,
+          where: reassignBiller ? { customerNo } : { customerNo, billerId: biller.id },
+          data: reassignBiller ? { ...record, billerId: biller.id } : record,
         });
         updated += change.count;
       }
